@@ -1,0 +1,573 @@
+---
+title: "2019 Canadian Federal Election Result Analysis"
+author: "Ruoxi Guan"
+date: "Dec.9, 2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+
+#devtools::install_github("hodgettsp/cesR")
+library(cesR)
+library(tidyverse)
+library(visdat)
+library(skimr)
+library(labelled)
+library(dplyr)
+library(foreign)
+library(nnet)
+library(ggplot2)
+library(reshape2)
+library(lme4)
+library(kableExtra)
+library(knitr)
+library(stringr)
+library(devtools)
+library(jtools)
+library(broom.mixed)
+library(table1)
+library(pROC)
+library(rvest)
+
+#loading in the survey data
+#call 2019 CES onine survey
+#get_ces("ces2019_web")
+library(haven)
+ces2019_web <- read_dta("~/Desktop/inst/extdata/ces2019_web/ces2019_web.dta") 
+#convert values to factor type
+ces2019_web<-to_factor(ces2019_web)
+head(ces2019_web)
+
+survey_data<- ces2019_web
+
+#loading in the census data
+census_data<-read_csv("~/Desktop/Sta 304/sta304 final project/98-402-X2016010-T1-CANPR-eng.csv")
+```
+# Abstract
+
+The outcome of the Canadian Federal Election usually has a huge impact on the country’s policy, industry, economy and even every citizen, so numerous reports about forecasting the result of election will be published during each election period. In the 2019 Canadian Federal Election, which had 67% overall voter turnout, the Liberals had a narrow victory, despite the fact that they received the lowest percentage of popular votes of a governing party in Canadian history. A multilevel regression (a generalized linear mixed-effects regression model) with post-stratification analysis based on two datasets,  “2019 CES Online Survey” and “Education Highlight Tables, 2016 Census”, is performed in the report, supported by some graphs and tables. The final estimated outcome for the 2019 Canadian Federal election is that the Liberal Party would win seven seats in the House of Commons with 27.2% popular vote, indicating that Liberal party would be unlikely to win the 2019 Canadian Federal Election if “everyone” had voted. 
+
+# Keywords
+MRP, glmer, 2019 Canadian Federal Election, Prediction, Liberal Party, Different Outcome.
+
+
+# Introduction
+
+Numerous predictions and opinions will be published during each federal election period. The outcome of the Canadian Federal Election may have a huge impact on the country’s policy, industry, economy, even every citizen. By applying statistics to voter preferences and analyzing the statistical model, candidates can design new approaches to attract more voters. For example, the “simple seat project model” and “Poll Aggregation Methodology” were introduced by Rosenthal (Rosenthal, 2011) and Eric (Eric, ThreeHundredEight.com) when they tried to predict the election results. Due to a dramatically increasing demand for information about every aspect of the world, there are extensive pollings on important policy issues, such as the Federal Election. Although some of the surveys are not representative and accurate enough in the sense of having small samples or unprofessional design of the surveys, they are useful for fitting multilevel regression with post-stratification(MRP) - another excellent technique to predict the election results.
+
+In the 2019 Canadian Federal Election, the Liberals had a narrow victory, despite the fact that they lost the popular vote. Compared to 184 seats with 39.47% popular vote that the Liberal Party won in the 2015 Canadian Federal Election, it only won 157 seats with 33.12% popular vote in 2019. The overall voter turnout in 2019 also decreased from 68.3% in 2015 to 67%. It would be interesting to investigate whether the 2019 election result will be different if all citizens vote, which can be done by applying MRP. In general, MRP is a statistical technique to correct estimates when there are known differences between the target population and study population. Building upon ideas of Fay and Herriot, Gelman and T.Little initially developed MRP, which was further expanded by Park, Gelman, Bafumi, Lax, Phillips, Warshaw, Rodden, and Wang et al. (Multilevel regression with poststratification 2020). 
+
+All Canadian citizens who are at least 18 years old on election day and can provide acceptable proof of identity and address are eligible to register and vote in a federal election. The electoral system of Canada is referred to as a “single-member plurality” system. Representation in the House of Commons is based on geographical divisions called electoral districts, also known as ridings (Election Canada). In each of 338 electoral districts, the candidate wins a seat in the House of commons if the candidate has the highest number of votes in the district. The candidate who has the most seats in the House of commons wins. The goal of this project is to build a MRP model based on CES and 2016 census of population, identifying how the 2019 Canadian Federal Election would have been different if “everyone” had voted. The two datasets, “2019 CES Online Survey” and “Education Highlight Tables, 2016 Census”, are obtained from the “2019 Canadian Election Study” and “Statistics Canada, 2016 Census of Population”, respectively.
+
+Two data sets (CES is the survey data and 2016 Census data is the Census) will be used to perform MRP and further predict the final results of 2019 Canadian Federal Election if “everyone” had voted. Data analysis and model building techniques will be included in the Methodology Section. The result section will include model analysis, tables, and graphs. Summary,conclusion, weaknesses, and next steps of this project will be in the Discussion. References and Appendix will be listed in the end.
+
+
+# Methodology
+
+## Data Cleaning Process
+```{r Cleaning Process, include=FALSE}
+# Step 1: Filter out all the valid observation
+### Survey Data Filtering ###
+# Only those observations that are certain to vote or likely to vote are selected.
+# Only those observations that are eligible for voting are kept 
+#i.e Canadian citizen aged 18 or older
+# Only those observations that specify which party they will vote are selected.
+table(survey_data$cps19_v_likely)
+
+survey <- survey_data %>% 
+  filter(cps19_v_likely == "Certain to vote"| 
+                cps19_v_likely == "Likely to vote"| 
+                cps19_v_likely == "I voted in an advance poll")%>%
+  filter(cps19_citizenship != "Permanent resident")
+
+# deal with the response variable
+#survey$cps19_votechoice<-factor(survey$cps19_votechoice)
+survey<- survey%>%
+  mutate(votechoice = ifelse(cps19_votechoice== "Liberal Party", "Liberal Party", "Other Party"))
+#survey<- survey%>%
+  #filter(cps19_votechoice != "Don't know/ Prefer not to answer")
+
+
+table(survey_data$cps19_votechoice)
+table(survey$cps19_votechoice)
+table(survey$cps19_v_likely)
+
+### Census Data Filtering ###
+#first, we have to pivot the data, increasing the number of rows and decreasing the number of columns.
+educ_comb<-c("Total - Highest certificate, diploma or degree (2016 counts)"                              
+             ,"No certificate, diploma or degree (2016 counts)"                                           
+             ,"Secondary (high) school diploma or equivalency certificate (2016 counts)"                  
+             ,"Apprenticeship or trades certificate or diploma (2016 counts)"                             
+             ,"College, CEGEP or other non-university certificate or diploma (2016 counts)"               
+             ,"University certificate or diploma below bachelor level (2016 counts)")
+
+census<-census_data %>% 
+  dplyr::select(c("Geographic name","Age","Sex",educ_comb))%>% 
+  pivot_longer(cols=educ_comb, names_to='education',values_to="total_pop")
+#After combining the cols of education and pivoting the data, 
+#there are five vairbales and 1512 observations.
+
+#we have to remove duplicated observations, box sexs, total education, and Canada
+census<-census %>% 
+  dplyr::filter(`Geographic name` !="Canada" &  Sex!="Both sexes" 
+                & education !='Total - Highest certificate, diploma or degree (2016 counts)')
+table(census$Sex)
+table(census_data$Sex)
+
+# Step 2: Matching variable names and categories in both data 
+##### Clean age #####
+#census age
+#noticing that there are 6 age groups in census data. 
+# 25 to 34, 25 to 64, 35 to 44, 45 to 54, 55 to 64, and all ages 15-plus.
+# 25 to 64 and all ages contains duplicated datas, 
+# we can subtract the observations for 25 to64 from all ages, 
+# then we will get a new age group from 15-24 union 64+.
+table(census$Age)
+for(g in unique(census$`Geographic name`)){
+  for(s in unique(census$Sex)){
+    for(e in unique(census$education)){
+      x=list(g,'Other',s,e, 
+             as.numeric(census[census$`Geographic name`==g & 
+                               census$Sex==s & census$education==e & 
+                               census$Age=="All ages, 15-plus","total_pop"]
+                       -census[census$`Geographic name`==g & 
+                               census$Sex==s & census$education==e & 
+                                 census$Age=="25 to 64","total_pop"]))
+      census<-rbind(census,x)
+      
+    }
+  }
+}
+
+census<-census %>% filter(Age != "25 to 64" & Age != "All ages, 15-plus")
+
+#survey age
+survey<-survey %>%
+  mutate(Age = ifelse(cps19_age %in% 25:34,"25 to 34",
+               ifelse(cps19_age %in% 35:44,"35 to 44",
+               ifelse(cps19_age %in% 45:54,"45 to 54",
+               ifelse(cps19_age %in% 55:64,"55 to 64",
+                      "Other")))))
+
+#table(survey$Age)
+table(census$Age)
+table(is.na(survey$Age))
+table(is.na(census$Age))
+
+##### Clean Sex #####
+#survey sex
+#table(survey$cps19_gender)
+#table(census$Sex)
+
+survey<- survey %>%
+  filter(cps19_gender != "Other (e.g. Trans, non-binary, two-spirit, gender-queer)")%>%
+  mutate(Sex = ifelse(cps19_gender == "A man", "Male", "Female"))
+
+#table(survey$Sex)
+table(is.na(survey$Sex))
+table(is.na(census$Sex))
+
+
+##### Clean Province#####
+
+survey<- rename(survey, Province = cps19_province)
+census<- rename(census, Province =`Geographic name` )
+
+table(survey$Province)
+table(census$Province)
+table(is.na(survey$Province))
+table(is.na(census$Province))
+
+##### Clean education#####
+#survey education
+# Assumptions:
+# assume Some secondary/ high school and Completed secondary/ high school as Secondary (high) school diploma or equivalency certificate (2016 counts)
+# assume Some technical, community college, CEGEP, College Classique and Completed technical, community college, CEGEP, College Classique as College, CEGEP or other non-university certificate or diploma (2016 counts)
+#assume Some university,Bachelor's degree, Master's degree and Professional degree or doctorate as University certificate or diploma below bachelor level (2016 counts)
+survey<- survey%>%
+  mutate(Education = 
+           ifelse(cps19_education == "Some secondary/ high school"| 
+                  cps19_education == "Completed secondary/ high school",
+                  "Secondary (high) school diploma or equivalency certificate (2016 counts)",
+           ifelse(cps19_education == "Some technical, community college, CEGEP, College Classique"| 
+                  cps19_education =="Completed technical, community college, CEGEP, College Classique",
+                  "College, CEGEP or other non-university certificate or diploma (2016 counts)",
+           ifelse(cps19_education == "Some university" | 
+                  cps19_education == "Bachelor's degree" | 
+                  cps19_education== "Master's degree" | 
+                  cps19_education == "Professional degree or doctorate", 
+                  "University certificate or diploma below bachelor level (2016 counts)",
+                  "Other"))))
+#census education
+census<- census%>%
+  mutate(Education = 
+           ifelse(education=="College, CEGEP or other non-university certificate or diploma (2016 counts)",
+                  "College, CEGEP or other non-university certificate or diploma (2016 counts)",
+           ifelse(education == "Secondary (high) school diploma or equivalency certificate (2016 counts)",
+                         "Secondary (high) school diploma or equivalency certificate (2016 counts)",
+           ifelse(education == "University certificate or diploma below bachelor level (2016 counts)",
+                                "University certificate or diploma below bachelor level (2016 counts)",
+                                "Other"))))
+table(survey$Education)
+table(census$Education)
+table(is.na(survey$Education))
+table(is.na(census$Education))
+```
+
+As mention above, the two datasets, “2019 CES Online Survey” and “Education Highlight Tables, 2016 Census”, are obtained from the “2019 Canadian Election Study” and “Statistics Canada, 2016 Census of Population”, respectively. CES will be the survey data and 2016 census data will be the census data. For the survey data (CES 2019 online survey), only those observations that are eligible to vote (Canadian citizens who are 18 years old or older) are selected. Since some observations will not vote or do not specify which party that they will vote, those observations are removed. “Cps19_votechoice” is the response variable, which has been converted into a binary variable (“Liberal Party” and “Other Party”) for simplicity. By setting “Other Party” as the reference, the further analysis aims to predict the probability of voting for Liberal Party. The census data (2016 census) is in the cartesian data frame, so measures are at the intersections of each group and number. By pivoting the data, the measure can be looked up by the corresponding group and number. Some duplicate observations are created due to pivoting, such as “both sexes” and “total education”, so those observations have been removed as well. N/A observations are removed in both data.
+
+In order to ensure that variables’ names and categories in the cleaned survey data can be matched to those in the census data, further data cleaning processes are required. There are six age groups in the census data: “25 to 34”, “25 to 64”, “ 35 to 44”, “45 to 54”, “55 to 64”, “and all ages 15-plus”. Noticing that “24 to 64” and “all ages 15 plus” contain duplicate observations, a new age group can be created by subtracting 25 to 64 years old from all ages, so that the new age group contains the observations that are 15 to 24 years old or older then 64. After splitting the age into the same age group in survey data, age can be matched in two data. Sex and Province in two datasets are in the similar format, so that they can be matched by renaming and regrouping. For the education, some assumptions are introduced in order to match two datasets (Appendix #1). 
+
+\newpage
+## Table 1
+Age, Sex, Province and Education are the four vairables that have been selected to fit the model. One the most important reason to choose those four variables is that they are the only four variables that are generated from the census data. Of 31,335 observations in the survey data, 8,898 observations will vote for the liberal party and 22,437 will not. Compared to males, more females register the vote, occupying 58.5% of the overall sample size. In addition, there is a positive correlation between the voter turnouts and voters’ education levels. Most of the voters are from Ontario, Quebec, Alberta and British Columbia. Since the census data is originally in the cartesian data frame, measures are at the intersections of each group and number. After pivoting the data, each observation is weighted by their population. A baseline characteristics table for the census data does not provide extra information.
+
+```{r Table 1, tab.cap = "Baseline Characteristics of the Survey Data",fig.height=1}
+#baseline characteristics of the data
+table1<-table1(~Age+Sex+Education+Province |votechoice, data=survey)
+character_table<- read_html(table1)
+table1<- character_table %>% html_table(header=T,fill =T)
+knitr::kable(table1,caption = "Baseline Characteristics of the Survey Data", align = "lccc", format = "markdown")%>%
+  kable_styling(latex_options = c("scale_down"))%>%
+  kable_styling(font_size =11)%>%
+  column_spec(1, width = "7cm")%>%
+  row_spec(0,bold=T)%>%
+  row_spec(1,bold = T)%>%
+  row_spec(7,bold = T)%>%
+  row_spec(10,bold = T)%>%
+  row_spec(15,bold=T)
+#table1(~total_pop, data=census)
+#since census data is in cartisian data frame originally, so baseline characteristics are not that useful
+```
+
+
+## Model
+
+### Model Specifics
+```{r, include=FALSE}
+# Keep those variables that will be used
+survey<- survey %>% select(Age,Sex,Province,Education,votechoice,cps19_votechoice)
+census<- census %>% select(Age,Sex,Province,Education,total_pop)
+# remove na observations
+survey <- na.omit(survey)
+census<-na.omit(census)
+
+# Creating cell variable 
+survey$cell <- paste(survey$Age, survey$Sex)
+census$cell <- paste(census$Age, census$Sex)
+
+survey$votechoice<- factor(survey$votechoice)
+# Converting categorical variables to factors
+survey_factor<- c("Age","Sex","Province","Education", "cell")
+survey[survey_factor] <- lapply(survey[survey_factor], factor)
+census_factor<- c("Age","Sex","Province","Education","cell")
+census[census_factor] <- lapply(census[census_factor], factor) 
+
+
+#table(survey$votechoice)
+survey$votechoice <- relevel(survey$votechoice, ref = "Other Party")    
+# To predict probability of voting for Liberal party. (another party as ref)
+
+#Counting the number of cells
+#length(unique(survey$cell)) 
+#length(unique(census$cell))
+
+#####model
+model <- glmer(votechoice ~ (1+Education+Sex|cell) +Age+Province, data = survey, family = binomial)
+summary(model) # AIC: 36352.0  BIC: 36619.2
+
+predict<-predict(model, type= c("response"))
+
+#####model1
+#model1<- glmer(votechoice ~ (1+Age+Education|cell) +Sex+Province, data = survey, family = binomial)
+#summary(model1) #AIC: 36379.1  BIC:36796.8
+#predict1<-predict(model1, type= c("response"))
+#roc2 <- roc(survey$votechoice, predict1)
+#auc(roc2)
+#plot(roc2, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+
+#determine the threshold by calculating the avg popular vote for the winner of the election of past 5 elctions
+#(0.331+0.395+0.396+0.376+0.363)/5
+#0.3722
+#determine the threshold by calculating the avg popular vote for the winner of minority government of last 5 elctions.
+#(0.331+0.376+0.363+0.367+0.359)/5
+#0.3592
+
+model_result <- ifelse(predict >= 0.3592, "Liberal Party", "Other Party")
+survey_result <- cbind(survey, model_result)
+```
+
+In this project, there is no assumption that parameters follow any distributions, so a frequentist approach is being used. The predictions are on the underlying truths of the experiment using only two datasets. Since MRP is using in this project and the response variable in the survey data is binary, fitting a generalized linear mixed-effects regression model (Using glmer() under package “lme4” in R) with a family of binomials to predict the proportion of voters who will vote for the Liberal Party. Here, we set that if the predicted probability is larger than 0.3592, Liberal Party wins the election. The threshold is the average of 5 popular votes for the winner of the minority government. In other words, according to the historical data, a party will win a minority government on average if its popular vote is larger than 0.3592. 
+
+Age, Sex, Province, and Education are the four variables that have been selected to fit the model since the limitation of the census data. Before fitting the model, a self-defined cell with two variables, “Age” and “Sex”, is created. Since “Age” has 5 categories and “Sex” has 2 categories, the population has been partitioned into 10 cells. By doing so, the response variable per cell of the census data can be estimated using the model that is built based on the survey data. Additionally, the values of intercept and coefficients of education and sex are expected to change as cells change. Thus, the model contains both random intercept and random coefficients. The generalized linear mixed-effects regression model is:
+
+$$ P(Y_i = Vote\  for\  Liberal \ Party\ | \ cell_j) = logit^{-1}(\alpha + \alpha_j+ \beta_{j[i]}^{\ Education} + \beta_{j[i]}^{\ Sex} + \beta_{[i]}^{\ Age} + \beta_{[i]}^{\ Province})$$
+
+Where $P(Y_i = Vote\ for\ Liberal\ Party \ | \ cell_j)$ represents the probability that respondents vote for the liberal Party, depending on the cell membership of the $i^{th}$ respondent. $\alpha$ is the intercept baseline, and $\alpha_j$ is a random variable that follows $N(0,\sigma_{\alpha}^2)$, which can be represented by the difference between baseline and the intercept of each cell of the $i^{th}$ respondent. The terms $\beta_{j[i]}^{\ Education}$ and $\beta_{j[i]}^{\ Sex}$ correspond to the varying coefficients associated with education and sex, which can be interpreted as the difference between the slope baseline and the coefficient of each cell of the $i^{th}$ respondent. Here, the subscript $j[i]$ indicates the cell to which the $i^{th}$ respondent belongs. For example, $\beta_{j[i]}^{\ sex}$ takes values to form $\{\beta_{male}^{\ sex},\  \beta_{female}^{\ sex}\}$ depending on the cell membership of the $i^{th}$ respondent. The random coefficients $\beta_{j[i]}^{\ sex}$ and $\beta_{j[i]}^{\ Education}$ follow $N(0,\sigma_{sex}^2)$ and $N(0,\sigma_{Education}^2)$, respectively. $\beta_{[i]}^{\ Age}$ and $\beta_{[i]}^{\ Province}$ are the terms with constant slope that will not be affected as we change among $j$ cells. The reference categories are "25 to 34" and " Alberta" for variables "Age" and "Province". The probability of an observation that is the $i^{th}$ category to vote for the Liberal Party is $\beta_{[i]}^{\ Age}$ or $\beta_{[i]}^{\ Province}$ times the probability of observation in the corresponding reference category to vote for the Liberal Party,controlling for other covariates.
+
+### Model Checking
+
+Besides the complexity, the accuracy of the model is also significant. Another model, model1, is built in order to do the model comparison. In model1, “Age” has a random coefficient and “Sex” has constant coefficient, keeping other variables the same as the previous model. The AIC is lower for the previous model, which means that it fits the data better in the sense of having fewer variables and higher accuracy. In addition, the AUC of the previous model is 0.6174 (see Appendix #2, Figure 2), which indicates that the chosen model can discriminate between voting for the liberal party and voting for another party 61.74% of the time. Thus, we can conclude that the original model fits the data better by comparing AIC and AUC of both models.
+
+
+\newpage
+# Results
+
+## Data
+Table 2: Summary of Voting Status in each Province
+```{r Table 2}
+# Summary Table: Voting Status in each Province 
+
+survey_data <- survey_data %>% 
+  filter(!is.na(survey_data$cps19_votechoice)) 
+
+#table(is.na(survey_data$cps19_demsat))
+
+levels(survey_data$cps19_votechoice)<-c("Liberal Party","Conservative Party","ndp",
+                                        "Bloc Quebecois","Green Party","People's Party",
+                                        "Another party (please specify)","Don't know/ Prefer not to answer")
+#####
+#table(survey_data$cps19_province)
+Turnout_rate_table <- survey_data %>%
+  group_by(cps19_votechoice) %>%
+  summarise(n=n(),
+            Alberta= sum(cps19_province == "Alberta")/ 3742*100,
+            BC= sum(cps19_province == "British Columbia")/3574*100,
+            Manitoba=sum(cps19_province=="Manitoba")/1407*100,
+            Nova_Scotia = sum(cps19_province == "Nova Scotia")/887*100,
+            Ontario=sum(cps19_province=="Ontario")/12338*100,
+            Quebec=sum(cps19_province == "Quebec")/7024*100,
+            Saskatchewan=sum(cps19_province=="Saskatchewan")/1131*100)
+
+# Changing the column names of the summary table
+colnames(Turnout_rate_table)[1] <- "Party Standings"
+colnames(Turnout_rate_table)[2] <- "Total Votes"
+colnames(Turnout_rate_table)[3] <- "AB"
+colnames(Turnout_rate_table)[4] <- "BC"
+colnames(Turnout_rate_table)[5] <- "MB"
+colnames(Turnout_rate_table)[6] <- "NS"
+colnames(Turnout_rate_table)[7] <- "ON"
+colnames(Turnout_rate_table)[8] <- "QC"
+colnames(Turnout_rate_table)[9] <- "SK"
+
+# Using "kable" function to generate the summary table 
+kable(head(Turnout_rate_table), caption = "Summary of Vote %, by Party by Province", digits = 2, format = "markdown", align = "c", padding= 3.5)
+
+#full summary table
+#kable(Turnout_rate_table, caption = "Summary of Vote %, by Party by Province", digits = 2, format = "markdown", align = "c", padding= 3.5)
+```
+
+Table 2 summarizes the voter turnout according to each party and then each province. "AB'' stands for Alberta; "BC" stands for British Columbia; "MB" stands for Manitoba; "NS" stands for "Nova Scotia"; "ON" stands for "Ontario"; "QC" stands for "Quebec"; "SK" stands for "Saskatchewan". About half of voters in Alberta and Saskatchewan choose to vote Conservative party. On the other hand, Liberal Party has the highest voter turnout in Nova Scotia, Ontario, and Quebec. Table 1 indicates that Ontario and Quebec have most of the votes, so having a higher voter turnout in those two provinces is vital. 
+ 
+
+```{r Figure 1, fig.cap = "Number of Votes in Different Age Group", fig.height=5, fig.width=7.2}
+survey2<-survey%>%
+  filter(cps19_votechoice!= "Another party (please specify)" & 
+         cps19_votechoice!= "Don't know/ Prefer not to answer"&
+         cps19_votechoice!="People's Party" )
+#table(survey2$cps19_votechoice)
+a<-survey2 %>% group_by(Age,cps19_votechoice) %>%summarise(n=n())
+ggplot(a,aes(x=n,y=Age))+
+  geom_bar(aes(fill=cps19_votechoice), stat = "identity",
+           position = position_dodge(0.8), width = 0.7)+
+  labs(title = "Number of Votes in Different Age Group",
+       caption = "From 2019 Canadian Election Study - Online Survey Dataset",
+       x = "Count", 
+       y = "Age",
+       fill = "Voted for")+
+  scale_color_manual(values = c("#CC0000", "#000099","orange","#6633FF","#669933")) + 
+  scale_fill_manual(values = c("#CC0000", "#000099","orange","#66CCFF","#669933"))+
+  theme(legend.position = c(0.85, 0.25), 
+        legend.background = element_rect(size = 0.5, linetype = "solid", color = "#333333"))+
+  geom_text(aes(label = n, group = cps19_votechoice), 
+            position = position_dodge(0.8), vjust =0.5,hjust =-0.1, size =2.7)+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+\newpage
+Figure 1 shows the results of votes based on different age groups. Most voters are younger than 25 or older than 65 and most of them vote for the Liberal party. The Liberal party also gains most of the supporters from age groups of 25 to 34 and 35 to 44. Also, there is a positive correlation between the age group and number of votes. The older age group has a higher total number of votes whereas the younger age group has a lower total number of votes. Overall, the total number of votes for Liberal is the largest among all parties in the survey dataset.
+
+
+## Model
+
+Table 3: Summary of Voting Status in each Province
+```{r Table 3}
+# Model Results 
+kbl(broom::tidy(model)[1:6,], caption = "Summary Table of Model", 
+      digits = 3, format = "markdown", align = "c", padding=3) 
+```
+
+Table 3 shows the first six observations of the summary table, which summarizes the model results. All the intercepts and coefficients for the chosen variables can be obtained from this table. The P-values for each category in different variables can also be obtained, which can be used to check the statistical significance of the variable, and further analysing whether it would be influential on the outcome.
+
+
+## Post-Stratification
+
+If the proportion of voters who are willing to vote for the Liberal party is more significant than 35.92%, the multilevel regression model will predict the Liberal party will win the election. The post-stratification estimate $\hat{y}^{PS} = 0.272$. Since 0.272 < 0.3592, the Liberal party will not be the winner.
+
+Table 4: Predicted election results
+```{r Y_hat_PS Table 4, include=TRUE}
+# Post-Stratification
+census$estimate <- model %>%
+  predict(newdata = census, type = "response")
+
+Y_hat_PS <- census %>%
+  mutate(alp_predict_prop = estimate) %>%
+  summarise(alp_predict = sum(alp_predict_prop) / nrow(census))
+
+# Using model to predict census data
+Predict_Prob <- predict(model, census[,c("Age","Sex","Province","Education", "cell")], type = "response")
+predict_vote2019 <- ifelse(Predict_Prob >=0.3592, "Liberal Party", "Other Party")
+census_mod_pred <- cbind(census, predict_vote2019)
+
+# Calculating total votes based on the weight of each observation (variable: Total_pop)
+census_mod_pred$Vote_Liberal <- ifelse(census_mod_pred$predict_vote2019 == "Liberal Party", census_mod_pred$total_pop, 0)
+census_mod_pred$Vote_Other_Party <- ifelse(census_mod_pred$predict_vote2019 == "Other Party", census_mod_pred$total_pop, 0)
+
+
+# Calculating number of votes in each Pronvince
+pred_prov_votes <- census_mod_pred %>% group_by(Province) %>% 
+  summarise(Liberal = sum(Vote_Liberal), Other = sum(Vote_Other_Party))
+
+pred_prov_votes <- pred_prov_votes %>% 
+  mutate(Liberal_riding = ifelse(pred_prov_votes$Liberal/(pred_prov_votes$Liberal+pred_prov_votes$Other)>0.3592, "Liberal", "Other"))
+###############################################
+pred_prov_votes <- pred_prov_votes %>%
+  mutate(riding_Votes = 
+           case_when(Province == "Alberta" ~ 34, Province == "British Columbia" ~ 42,
+                     Province == "Manitoba" ~ 14,Province == "New Brunswick" ~ 10, 
+                     Province == "Newfoundland and Labrador" ~ 7, 
+                     Province == "Northwest Territories" ~ 1, 
+                     Province == "Nova Scotia" ~ 11, Province == "Nunavut" ~ 1, 
+                     Province == "Ontario" ~ 121,Province == "Prince Edward Island" ~ 4, 
+                     Province == "Quebec" ~ 78,Province == "Saskatchewan" ~14, 
+                     Province == "Yukon" ~ 1)) 
+
+
+Pred_result <- pred_prov_votes %>% group_by(Liberal_riding) %>% 
+  summarise(Total_Votes = sum(riding_Votes))
+
+colnames(Pred_result)[1] <- "Party"
+colnames(Pred_result)[2] <- "Total Votes"
+
+kbl(Pred_result, caption = "Predicted Election Result", digits = 3, format = "markdown", align = "c", padding=4) 
+```
+
+Table 4 shows the total votes of the Liberal party. The “Total_pop” variable in census data is a weighted variable, which means that each observation is differently weighted. Thus, the census data is adjusted by the “Total_pop” variable during the process of calculating the total number of votes. The above total votes are obtained by calculating the total votes in each province, then summing them up. However, in reality, the Canadian Federal Election is according to the electoral district as mentioned in the introduction, rather than by the province. Thus, the seats in a province can be occupied by all the parties, but here considering the seats in a province can only be occupied by one party. Under assumptions, of 338 seats, Liberal Party only wins seven seats in the House of Commons.
+
+\newpage
+# Discussion
+
+## Summary
+The very first step of the prediction about the 2019 Canadian Federal Election is cleaning both the survey (2019 CES Online Survey) and the census (Education Highlight Tables, 2016 Census) datasets, ensuring all the selected variables can be matched in two datasets. After getting a general impression of the data by checking its baseline characteristics, a generalized linear mixed-effects regression model has been fitted, which has a cell variable that contains Age and Sex. Comparing models with AIC and ROC curve, Education and sex are the two random coefficients of the model. The post-stratification estimate is calculated in order to predict the popular vote of Liberal Party. A table of predicted total votes is also displayed. By combining all information gained from data, a final prediction is made.
+
+
+## Conlusion
+The estimated proportion of voters in favour of voting for the Liberal Party is 0.272. This is based on the post-stratification analysis of the proportion of voters in favour of the Liberal Party modelled by a generalized linear mixed-effects regression model, which accounted for age, sex, province, education, and cell (sex and age). Since winners of the Federal Election will receive at least (since calculated by the minority government) 35.92% on average based on the historical data, Liberal Party is unlikely to win the election in the aspects of having a low popular vote. The prediction of the seats also provides the same answer, with only 7 seats in the House of commons, it is unlikely for the Liberal Party to win the election if  “everyone” has voted. 
+
+Thus, the final prediction of the 2019 Canadian Federal Election is that Liberal Party will not win if everyone has voted, which is different to reality that Liberal Party won the election with 67% overall turnout rate. In reality, the liberals lost the popular vote but finally had a narrow victory. With the popular vote of 33.12%, the Liberals received the lowest percentage of the popular vote of a governing party in Canadian history. Therefore, it is reasonable that its position is unstable and loses the election if there are more voters.
+
+
+## Weakness
+As described in the post-stratification section, the total votes is obtained by calculating the total votes in each province, then summing them up. However, in reality, the Canadian Federal Election is according to the electoral district as mentioned in the introduction, rather than by the province. Thus, the seats in a province can be occupied by all the parties, but here considering the seats in a province can only be occupied by one party. Moreover, the threshold of the predicted probability for the winner is calculated based on the historical data. However, past performances do not necessarily represent present or future.In addition, the Canadian census program provides a statistical portrait of the country every five years, so the most recent census data is the 2016 census of population. Since the census data was obtained from the 2016 census, not 2019, the final prediction might be affected by this issue.
+
+## Next Steps
+According to the system of Canadian Federal Election, the final result strongly relies on the winner in each electoral district, which means that the electoral districts can be a good factor of predicting the election winner. This can be done by finding a larger survey dataset to support the model. Some other models such as multinomial regression models may also work.
+
+\newpage
+# Reference
+- Elections Canada. (2013, January 14). Retrieved December 09, 2020, from https://www.elections.ca/
+
+- Cite “2019 CES Online Survey”: Stephenson, Laura B; Harell, Allison; Rubenson, Daniel; Loewen, Peter John, 2020, “2019 Canadian Election Study - Online Survey”, https://doi.org/10.7910/DVN/DUS88V, Harvard Dataverse, V1
+
+- Cite “ 2016 census data”: Statistics Canada. 2016, “Highest level of educational attainment (detailed) by sex and selected age groups”, Census of Population, Catalogue no. 98-402-X2016010
+
+- Andrew Gelman, Thomas C.Little, 1997, “ Post Stratification Into Many Categories Using Hierarchical Logistic Regression”. Survey Methodology, December 1997, Vol.23, No.2, pp. 127-135. Statistics Canada
+
+- Multilevel regression with poststratification. (2020, October 14). Retrieved December 09, 2020, from https://en.wikipedia.org/wiki/Multilevel_regression_with_poststratification
+
+- Eric. (1970, January 01). ThreeHundredEight.com. Retrieved December 09, 2020, from http://www.threehundredeight.com/
+List of State Electoral Votes For 2020. (n.d.). Retrieved December 09, 2020, from https://state.1keydata.com/state-electoral-votes.php
+
+- Jeffrey S. Rosenthal. Was the conservative majority predictable? The Canadian Journal of Statistics, 39(4):721–733, 2011.
+
+- Yuchen Cong, Jingwen Deng, Ruoxi Guan, Yuwei Sun , Nov.2, 2020, “2020 United States Presidential Election Prediction”
+
+- Cite R : R Core Team (2019). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/.
+
+- Cite “cesR” : Paul A. Hodgetts and Rohan Alexander (2020). cesR: Access the CES Datasets a Little Easier.. R package version 0.1.0.
+
+- Cite “tidyverse”: Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
+
+- Cite “visdat” : Tierney N (2017). “visdat: Visualising Whole Data Frames.” _JOSS_, *2*(16), 355. doi: 10.21105/joss.00355
+(URL: https://doi.org/10.21105/joss.00355), <URL: http://dx.doi.org/10.21105/joss.00355>.
+
+- Cite “skimr”  :Elin Waring, Michael Quinn, Amelia McNamara, Eduardo Arino de la Rubia, Hao Zhu and Shannon Ellis (2020).
+skimr: Compact and Flexible Summaries of Data. R package version 2.1.2.
+https://CRAN.R-project.org/package=skimr
+
+- Cite “labelled” : Joseph Larmarange (2020). labelled: Manipulating Labelled Data. R package version 2.7.0.  https://CRAN.R-project.org/package=labelled
+
+- Cite “dplyr” : Hadley Wickham, Romain Francois, Lionel Henry and Kirill Muller (2020). dplyr: A Grammar of Data Manipulation. R package version 1.0.2. https://CRAN.R-project.org/package=dplyr
+
+- Cite “foreign” : R Core Team (2020). foreign: Read Data Stored by 'Minitab', 'S', 'SAS', 'SPSS', 'Stata', 'Systat', 'Weka', 'dBase', .... R package version 0.8-75. https://CRAN.R-project.org/package=foreign
+
+- Cite “nnet”: Venables, W. N. & Ripley, B. D. (2002) Modern Applied Statistics with S. Fourth Edition. Springer, New York. ISBN 0-387-95457-0
+
+- Cite “ggplot2” : H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+
+- Cite “reshape2” :Hadley Wickham (2007). Reshaping Data with the reshape Package. Journal of Statistical Software, 21(12),
+1-20. URL http://www.jstatsoft.org/v21/i12/.
+
+- Cite “lme4”: Douglas Bates, Martin Maechler, Ben Bolker, Steve Walker (2015). Fitting Linear Mixed- Effects Models Using lme4. Journal of Statistical Software, 67(1), 1-48. doi:10.18637/jss.v067.i01.
+
+- Cite “kableExtra”: Hao Zhu (2020). kableExtra: Construct Complex Table with ‘kable’ and Pipe Syntax. R package version 1.2.1. https://CRAN.R-project.org/package=kableExtra
+
+- Cite “knitr”: Yihui Xie (2020). knitr: A General-Purpose Package for Dynamic Report Generation in R. R package version 1.27.
+
+- Cite “stringr”: Hadley Wickham (2019). stringr: Simple, Consistent Wrappers for Common String Operations. R package version 1.4.0. https://CRAN.R-project.org/package=stringr
+
+- Cite “devtools”: Hadley Wickham, Jim Hester and Winston Chang (2020). devtools: Tools to Make Developing R Packages Easier. R package version 2.3.2. https://CRAN.R-project.org/package=devtools
+
+- Cite “jtools”: Long JA (2020). jtools: Analysis and Presentation of Social Scientific Data. R package version 2.1.0, <URL: https://cran.r-project.org/package=jtools>.
+
+- Cite “ broom.mixed” :Ben Bolker and David Robinson (2020). broom.mixed: Tidying Methods for Mixed Models. R package version
+0.2.6. https://CRAN.R-project.org/package=broom.mixed
+
+- Cite “table1”: Benjamin Rich (2020). table1: Tables of Descriptive Statistics in HTML. R package version 1.2.1. https://CRAN.R-project.org/package=table1
+
+- Cite “pROC”: Xavier Robin, Natacha Turck, Alexandre Hainard, Natalia Tiberti, Frederique Lisacek, Jean-Charles Sanchez and Markus Muller (2011). pROC: an open-source package for R and S+ to analyze and compare ROC curves. BMC Bioinformatics, 12, p. 77. DOI: 10.1186/1471-2105-12-77 http://www.biomedcentral.com/1471-2105/12/77/
+
+- Cite "rvest":  Hadley Wickham (2020). rvest: Easily Harvest (Scrape) Web Pages. R package version 0.3.6.
+  https://CRAN.R-project.org/package=rvest
+
+\newpage
+# Appendix
+
+1. Some assumptions for education:
+- Assume Some secondary/ high school and Completed secondary/ high school as Secondary (high) school diploma or equivalency certificate (2016 counts)
+- Assume Some technical, community college, CEGEP, College Classique and Completed technical, community college, CEGEP, College Classique as College, CEGEP or other non-university certificate or diploma (2016 counts)
+- Assume Some university,Bachelor's degree, Master's degree and Professional degree or doctorate as University certificate or diploma below bachelor level (2016 counts)
+
+2. List of Canadian federal electoral districts:
+- https://en.wikipedia.org/wiki/List_of_Canadian_federal_electoral_districts
+
+
+3. ROC curve and AUC:
+```{r Figure 2, fig.cap = "AUC of the Chosen Model"}
+# ROC Curve for model
+roc <- roc(survey$votechoice, predict)
+auc(roc)
+plot(roc, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+```
+
+
+
+
+
+
